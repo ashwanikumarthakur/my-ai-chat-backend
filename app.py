@@ -1,78 +1,82 @@
-# app.py - आपका AI चैट बैकएंड
-
 import os
-import requests
-# [NEW - IMAGE FEATURE START] - (इमेज को टेक्स्ट में बदलने के लिए यह लाइन जोड़ी है)
-import base64 
-# [NEW - IMAGE FEATURE END]
+import base64
+# [OLD] import requests (Groq ke liye tha, ab zaroorat nahi)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# फ्लास्क एप्लीकेशन बनाएं
+# [NEW - GEMINI LIBRARY]
+from google import genai
+from google.genai import types
+
 app = Flask(__name__)
 
-# CORS सेटअप करें ताकि आपका चैट फ्रंटएंड इससे बात कर सके
-# यहाँ आपको अपने फ्रंटएंड का URL डालना होगा
-CORS(app, resources={r"/api/*": {"origins": "YOUR_FRONTEND_GITHUB_PAGES_URL"}}) 
+# CORS Setup
+# CORS(app, resources={r"/api/*": {"origins": "YOUR_FRONTEND_URL"}})
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Groq API Key को Render के Environment Variables से प्राप्त करें
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+# ==============================================================================
+# [OLD - GROQ API SETUP] (Commented Out)
+# GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+# GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+# ==============================================================================
 
-# [NEW - IMAGE FEATURE START] - (इमेज जनरेशन की सेटिंग्स यहाँ जोड़ी हैं)
-# आपको Render में 'HF_API_KEY' नाम से अपनी Hugging Face Token डालनी होगी
-HF_API_KEY = os.environ.get('HF_API_KEY')
-# हम Stable Diffusion XL मॉडल का उपयोग करेंगे
-HF_API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
-# [NEW - IMAGE FEATURE END]
+# ==============================================================================
+# [NEW - GOOGLE GEMINI SETUP] (Active)
+# Render Environment Variables me 'GOOGLE_API_KEY' add karein
+# ==============================================================================
+GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY')
 
-# --- आपका मुख्य AI API रूट ---
+# Client ko initialize karein (agar key nahi mili to error dega)
+if GOOGLE_API_KEY:
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+else:
+    print("Warning: GOOGLE_API_KEY not found in environment variables")
+    client = None
+
+# --- CHAT ROUTE ---
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    # उपयोगकर्ता का सवाल JSON से निकालें
     user_data = request.get_json()
     user_prompt = user_data.get('prompt')
 
     if not user_prompt:
         return jsonify({"error": "Prompt is required"}), 400
-    
-    if not GROQ_API_KEY:
-        return jsonify({"error": "API key is not configured on the server"}), 500
 
-    # Groq API को भेजने के लिए पेलोड तैयार करें
-    payload = {
-        "model": "llama3-8b-8192", # Llama 3 का 8B मॉडल
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant. Provide concise and accurate answers."
-            },
-            {
-                "role": "user",
-                "content": user_prompt
-            }
-        ]
-    }
-
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    # [NEW - GEMINI CHAT LOGIC START]
+    if not client:
+        return jsonify({"error": "Google API Key missing"}), 500
 
     try:
-        # Groq सर्वर पर रिक्वेस्ट भेजें
-        response = requests.post(GROQ_API_URL, headers=headers, json=payload)
-        response.raise_for_status() # अगर कोई एरर है तो उसे पकड़ें
-        
-        # AI का जवाब निकालें और फ्रंटएंड को भेजें
-        ai_response = response.json()['choices'][0]['message']['content']
-        return jsonify({"reply": ai_response})
+        # Gemini 2.0 Flash (Fastest Text Model)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash', 
+            contents=user_prompt
+        )
+        return jsonify({"reply": response.text})
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error calling Groq API: {e}")
-        return jsonify({"error": "Failed to get a response from the AI model."}), 500
+    except Exception as e:
+        print(f"Gemini Chat Error: {e}")
+        return jsonify({"error": str(e)}), 500
+    # [NEW - GEMINI CHAT LOGIC END]
 
-# [NEW - IMAGE FEATURE START] - (इमेज जनरेशन का पूरा नया फंक्शन यहाँ जोड़ा है)
+    # ==========================================================================
+    # [OLD - GROQ CHAT LOGIC] (Disabled/Commented)
+    # if not GROQ_API_KEY: return jsonify({"error": "API key missing"}), 500
+    # payload = {
+    #    "model": "llama3-8b-8192",
+    #    "messages": [{"role": "user", "content": user_prompt}]
+    # }
+    # headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    # try:
+    #    response = requests.post(GROQ_API_URL, headers=headers, json=payload)
+    #    ai_response = response.json()['choices'][0]['message']['content']
+    #    return jsonify({"reply": ai_response})
+    # except Exception as e:
+    #    return jsonify({"error": str(e)}), 500
+    # ==========================================================================
+
+
+# --- IMAGE GENERATION ROUTE ---
 @app.route('/api/generate-image', methods=['POST'])
 def generate_image():
     user_data = request.get_json()
@@ -81,35 +85,34 @@ def generate_image():
     if not prompt:
         return jsonify({"error": "Prompt is required"}), 400
 
-    # चेक करें कि Hugging Face Key है या नहीं
-    if not HF_API_KEY:
-        return jsonify({"error": "Hugging Face API key is missing on server"}), 500
+    # [NEW - GEMINI IMAGE LOGIC START]
+    if not client:
+        return jsonify({"error": "Google API Key missing"}), 500
 
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-    
     try:
-        # Hugging Face API को कॉल करें (इमेज बनाने के लिए)
-        response = requests.post(HF_API_URL, headers=headers, json={"inputs": prompt})
-        
-        if response.status_code != 200:
-            return jsonify({"error": "Failed to generate image"}), 500
+        # Imagen 3 (Nano Banana) Model
+        response = client.models.generate_image(
+            model='imagen-3.0-generate-001',
+            prompt=prompt,
+            config=types.GenerateImageConfig(
+                number_of_images=1,
+            )
+        )
 
-        # Hugging Face बाइनरी डेटा (bytes) देता है, हम उसे Base64 स्ट्रिंग में बदलेंगे
-        # ताकि फ्रंटएंड उसे आसानी से दिखा सके (बिना सेव किये)
-        image_bytes = response.content
-        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-        
-        # यह URL जैसा टेक्स्ट फ्रंटएंड पर इमेज दिखाएगा
-        final_image_url = f"data:image/jpeg;base64,{image_base64}"
-
-        return jsonify({"imageUrl": final_image_url})
+        # Google API direct bytes deta hai, humein Base64 banana padega
+        if response.generated_images:
+            image_bytes = response.generated_images[0].image.image_bytes
+            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+            final_image_url = f"data:image/jpeg;base64,{image_base64}"
+            return jsonify({"imageUrl": final_image_url})
+        else:
+            return jsonify({"error": "No image generated"}), 500
 
     except Exception as e:
-        print(f"Error generating image: {e}")
-        return jsonify({"error": str(e)}), 500
-# [NEW - IMAGE FEATURE END]
+        print(f"Gemini Image Error: {e}")
+        return jsonify({"error": f"Image generation failed: {str(e)}"}), 500
+    # [NEW - GEMINI IMAGE LOGIC END]
 
-# --- सर्वर को चालू करें ---
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
